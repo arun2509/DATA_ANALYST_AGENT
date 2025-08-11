@@ -1,5 +1,0 @@
-Scrape the list of highest grossing films from Wikipedia.
-1. How many $2 bn movies were released before 2000?
-2. Which is the earliest film that grossed over $1.5 bn?
-3. What's the correlation between the Rank and Peak?
-4. Draw a scatterplot of Rank and Peak with dotted red regression line.
