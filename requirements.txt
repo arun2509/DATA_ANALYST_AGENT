@@ -9,9 +9,4 @@ pyarrow
 openai
 google-generativeai
 dotenv
-json
-typing
-os
 aiofiles
-re
-subprocess
