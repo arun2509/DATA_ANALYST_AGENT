@@ -9,6 +9,10 @@ from typing import List, Dict
 
 from analyzer import analyze
 
+temp_file = "temp_code.py"
+if os.path.exists(temp_file):
+    os.remove(temp_file)
+
 app = FastAPI(title="TDS Data Analyst Agent")
 
 app.add_middleware(
