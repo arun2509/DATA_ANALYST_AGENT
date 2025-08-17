@@ -45,9 +45,11 @@ Rules for generated code:
 5. Robustness:
    - Wrap scraping and processing in try/except with clear error messages.
    - Code must run even if Wikipedia table structures change.
-6. Output:
-   - The final code should print or return the answers in plain text or JSON.
-   - If a chart is required, save it as 'scatterplot.png' or another appropriate name.
+6. **Output contract — very important**
+   - **Print exactly one JSON value** to stdout. No extra logs, no explanations.
+   - If the task asks for an array of 4 answers, print a JSON array of 4 raw values (numbers, strings, floats, URIs).
+   - Example: `[1, "Titanic", 0.485782, "data:image/png;base64,iVBORw0K..."]`
+   - Do not wrap values with extra wording like "The earliest film is...".
    - No explanations or markdown outside the ```python block.
 """
 

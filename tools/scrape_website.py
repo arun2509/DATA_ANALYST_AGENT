@@ -1,14 +1,14 @@
-from playwright.async_api import async_playwright
-import asyncio
-async def scrape_website(url: str, output_file: str = "scraped_content.html"):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            content = await page.content()
-            with open(output_file, "w", encoding="utf-8") as f:
-                await f.write(content)
-        except Exception as e:
-            print(f"Error scraping {url}: {e}")
-        await browser.close()
+import os
+import requests
+from bs4 import BeautifulSoup
+from typing import Dict, Any
+
+
+def scrape_website(url: str, output_file: str) -> Dict[str, Any]:
+    """Fetch a URL and save HTML to output_file."""
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(resp.text)
+    return {"ok": True, "file": output_file, "size": len(resp.text)}

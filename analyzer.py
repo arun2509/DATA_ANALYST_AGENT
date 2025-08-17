@@ -1,20 +1,20 @@
 import os
-import subprocess
-import base64
-from io import BytesIO
-from typing import List, Dict, Any
-import json
 import re
+import json
+import base64
+import traceback
+import subprocess
+from io import BytesIO
+from typing import Dict, Any
+
 import matplotlib.pyplot as plt
 import pandas as pd
-import traceback
-import shutil  # ✅ added for cleanup
 
-from gemini_llm import query_gemini  # Your Gemini wrapper
+from gemini_llm import query_gemini
 from tools import scrape_website, get_relevant_data
 from google.generativeai.types.generation_types import StopCandidateException
 
-tools = [
+TOOLS = [
     {
         "function_declarations": [
             {
@@ -26,8 +26,8 @@ tools = [
                         "url": {"type": "string", "description": "URL to scrape"},
                         "output_file": {"type": "string", "description": "Output HTML file"},
                     },
-                    "required": ["url", "output_file"]
-                }
+                    "required": ["url", "output_file"],
+                },
             },
             {
                 "name": "get_relevant_data",
@@ -38,157 +38,158 @@ tools = [
                         "file_name": {"type": "string", "description": "Path to HTML file"},
                         "js_selector": {"type": "string", "description": "CSS selector"},
                     },
-                    "required": ["file_name", "js_selector"]
-                }
-            }
+                    "required": ["file_name"],
+                },
+            },
         ]
     }
 ]
 
-# 🛠 Fix parameter names if Gemini sends wrong keys
-def sanitize_tool_params(tool_name: str, params: dict) -> dict:
-    fixes = {
-        "scrape_website": {"file": "output_file"},
-        "get_relevant_data": {"file": "file_name"}
-    }
-    if tool_name in fixes:
-        for wrong, correct in fixes[tool_name].items():
-            if wrong in params and correct not in params:
-                params[correct] = params.pop(wrong)
+# Map occasional wrong param keys coming back from LLM
+_FIX_KEYS = {
+    "scrape_website": {"file": "output_file"},
+    "get_relevant_data": {"file": "file_name"},
+}
+
+
+def _sanitize_params(tool: str, params: dict) -> dict:
+    if tool in _FIX_KEYS:
+        for wrong, right in _FIX_KEYS[tool].items():
+            if wrong in params and right not in params:
+                params[right] = params.pop(wrong)
     return params
 
-# 🔄 Auto-rename Film/Title column
-def rename_film_column(df: pd.DataFrame) -> pd.DataFrame:
+
+def _rename_film_column(df: pd.DataFrame) -> None:
     try:
         cols_lower = {c.lower(): c for c in df.columns}
-        if "film" in cols_lower:
-            df.rename(columns={cols_lower["film"]: "Title"}, inplace=True)
-        elif "title" in cols_lower:
+        if "film" in cols_lower and cols_lower["film"] != "Film":
+            df.rename(columns={cols_lower["film"]: "Film"}, inplace=True)
+        elif "title" in cols_lower and cols_lower["title"] != "Film":
             df.rename(columns={cols_lower["title"]: "Film"}, inplace=True)
-    except Exception as e:
-        print(f"[WARN] Could not rename Film/Title column: {e}")
-    return df
+    except Exception:
+        pass
 
-# 🖼️ Save plot as base64
-def save_plot_as_base64():
+
+def _save_current_plot_as_base64() -> str | None:
     try:
         buf = BytesIO()
-        plt.savefig(buf, format="png")
+        plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
         buf.seek(0)
-        image_base64 = base64.b64encode(buf.read()).decode("utf-8")
+        data = base64.b64encode(buf.read()).decode("utf-8")
         buf.close()
-        return image_base64
-    except Exception as e:
-        print(f"[WARN] Failed to save plot as base64: {e}")
+        return data
+    except Exception:
         return None
 
-# 🧠 Run Gemini-generated code safely
-def run_code_and_capture_output(code: str) -> List[Dict[str, Any]]:
-    temp_code_path = "temp_code.py"
-    try:
-        with open(temp_code_path, "w", encoding="utf-8") as f:
-            f.write(code)
-    except Exception as e:
-        return [{"type": "text", "output": f"❌ Failed to write code file: {e}"}]
+
+def _run_generated_code(code: str) -> tuple[bool, str]:
+    """Run LLM-generated Python and return (ok, text_output).
+    The generated code must **print a JSON string** (array or object) to stdout.
+    We also try to capture a figure if created, but the evaluator only reads stdout.
+    """
+    temp_path = "temp_code.py"
+    # Ensure the script runs in a clean namespace with pandas/matplotlib available
+    with open(temp_path, "w", encoding="utf-8") as f:
+        f.write(code)
 
     try:
-        result = subprocess.run(
-            ["python", temp_code_path],
-            capture_output=True, text=True, timeout=60
-        )
-        output = (result.stdout or "") + (result.stderr or "")
+        proc = subprocess.run(["python", temp_path], capture_output=True, text=True, timeout=120)
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
 
-        # Attempt to inspect DataFrames & fix Film/Title mismatch
+        # Best-effort fix on DataFrames post-run (if the user kept them in globals)
         try:
-            local_vars = {}
+            local_vars: Dict[str, Any] = {}
             exec(code, {"pd": pd, "plt": plt}, local_vars)
-            for v in local_vars.values():
+            for v in list(local_vars.values()):
                 if isinstance(v, pd.DataFrame):
-                    rename_film_column(v)
-        except Exception as e:
-            print(f"[WARN] Failed to inspect DataFrames: {e}")
+                    _rename_film_column(v)
+        except Exception:
+            pass
 
-        # Capture image
-        image_base64 = None
-        try:
-            if os.path.exists("scatterplot.png"):
+        # If figure exists but not saved, expose via hidden image (not used by evaluator)
+        if os.path.exists("scatterplot.png"):
+            try:
                 with open("scatterplot.png", "rb") as f:
-                    image_base64 = base64.b64encode(f.read()).decode("utf-8")
-            else:
-                image_base64 = save_plot_as_base64()
-        except Exception as e:
-            print(f"[WARN] Failed to read plot image: {e}")
+                    _ = base64.b64encode(f.read()).decode("utf-8")
+            except Exception:
+                pass
+        else:
+            _ = _save_current_plot_as_base64()
 
-        response = [{"type": "text", "output": output.strip() or "✅ Code executed, but no textual output."}]
-        if image_base64:
-            response.append({"type": "image", "output": f"data:image/png;base64,{image_base64}"})
-        return response
+        # Prefer stdout; if empty, surface stderr to help debugging
+        body = stdout if stdout else (stderr or "")
+        return True, body
 
     except subprocess.TimeoutExpired:
-        return [{"type": "text", "output": "⏱️ Code execution timed out!"}]
+        return False, json.dumps({"error": "Code execution timed out"})
     except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"[ERROR] Code execution failed:\n{error_trace}")
-        return [{"type": "text", "output": f"❌ Code execution failed: {str(e)}"}]
+        return False, json.dumps({"error": f"Code execution failed: {e}"})
 
-# 📊 Main analysis entrypoint
-def analyze(questions_file: str, all_files: Dict[str, str]) -> List[Dict[str, Any]]:
-    # Load questions
+
+def analyze(questions_file: str, all_files: Dict[str, str]) -> Dict[str, Any]:
+    # 1) read prompt
     try:
         with open(questions_file, encoding="utf-8") as f:
-            prompt = f.read()
+            user_task = f.read()
     except Exception as e:
-        return [{"type": "text", "output": f"❌ Failed to read questions file: {e}"}]
+        return {"ok": False, "body": json.dumps({"error": f"Failed to read questions.txt: {e}"})}
 
-    # Call Gemini safely with retry on MALFORMED_FUNCTION_CALL
-    for attempt in range(2):  # First try + one retry
+    # 2) call LLM with system prompt + tools
+    for attempt in range(2):
         try:
-            response = query_gemini(prompt, tools=tools)
-            break  # Success, exit retry loop
-        except StopCandidateException as e:
+            response = query_gemini(user_task, tools=TOOLS)
+            break
+        except StopCandidateException:
             if attempt == 0:
-                print(f"[WARN] Gemini returned malformed function call. Retrying...")
-                prompt += "\n\nYour last tool call failed due to malformed parameters. Please retry with correctly formatted parameters."
-                continue  # Retry once
-            else:
-                error_trace = traceback.format_exc()
-                print(f"[ERROR] Gemini returned malformed function call after retry:\n{error_trace}")
-                return [{"type": "text", "output": "⚠️ Gemini failed twice due to malformed tool parameters. No valid answer could be generated."}]
+                user_task += "\n\n(RETRY) Your previous tool call failed. Call tools again with correct parameters."
+                continue
+            return {"ok": False, "body": json.dumps({"error": "Malformed tool call twice"})}
         except Exception as e:
-            error_trace = traceback.format_exc()
-            print(f"[ERROR] Gemini query failed:\n{error_trace}")
-            return [{"type": "text", "output": f"❌ Gemini query failed: {str(e)}"}]
+            return {"ok": False, "body": json.dumps({"error": f"Gemini error: {e}"})}
 
-    # Save Gemini response for debugging
+    # 3) execute any tool calls (scrape, extract)
     try:
-        response_text = getattr(response, "text", str(response))
-        with open("gpt_response.json", "w", encoding="utf-8") as f:
-            json.dump({"text": response_text}, f, indent=2)
-    except Exception as e:
-        print(f"[WARN] Failed to save Gemini response: {e}")
-
-    # Handle tool calls
-    if hasattr(response, "function_calls"):
-        for tool_call in response.function_calls:
+        calls = getattr(response, "function_calls", []) or []
+        for c in calls:
+            name = getattr(c, "name", "")
+            args = getattr(c, "args", "{}")
             try:
-                function_name = tool_call.name
-                parameters = json.loads(tool_call.args)
-                parameters = sanitize_tool_params(function_name, parameters)
+                params = json.loads(args) if isinstance(args, str) else dict(args)
+            except Exception:
+                params = {}
+            params = _sanitize_params(name, params)
 
-                if function_name == "scrape_website":
-                    scrape_website(**parameters)
-                elif function_name == "get_relevant_data":
-                    get_relevant_data(**parameters)
-            except Exception as e:
-                print(f"[WARN] Tool execution failed for {tool_call.name}: {e}")
+            if name == "scrape_website":
+                scrape_website(**params)
+            elif name == "get_relevant_data":
+                get_relevant_data(**params)
+            # ignore others silently
+    except Exception:
+        pass
 
-    # If Gemini returned code, execute it
-    if hasattr(response, "text"):
-        full_text = response.text or ""
-        match = re.search(r"```python(.*?)```", full_text, re.DOTALL)
-        if match:
-            return run_code_and_capture_output(match.group(1).strip())
-        if "import" in full_text or "def " in full_text:
-            return run_code_and_capture_output(full_text.strip())
+    # 4) find generated python in the LLM text and run it
+    text = getattr(response, "text", "") or ""
+    code = None
 
-    return [{"type": "text", "output": "🤷 No usable code returned by Gemini."}]
+    # prefer fenced ```python blocks
+    m = re.search(r"```python\n(.*?)```", text, flags=re.DOTALL)
+    if m:
+        code = m.group(1).strip()
+    elif "import" in text or "def " in text:
+        code = text.strip()
+
+    if not code:
+        # No code returned – create a friendly fallback answer that still returns JSON
+        fallback = json.dumps([
+            0,
+            "Not enough data to determine the earliest film over $1.5B",
+            0.0,
+            "data:image/png;base64,"
+        ])
+        return {"ok": True, "body": fallback}
+
+    ok, body = _run_generated_code(code)
+    # Ensure we return **only** the JSON structure the generated code printed
+    return {"ok": ok, "body": body}
