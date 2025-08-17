@@ -3,7 +3,7 @@ description: "TDS Data Analyst Agent – generic eval (20-point rubric)"
 providers:
   - id: https
     config:
-      url: http://127.0.0.1:8000/ # Replace this with your API endpoint
+      url: https://data-analyst-agent-m7q3.onrender.com # Replace this with your API endpoint
       method: POST
       body: file://question.txt
       transformResponse: json
