@@ -8,4 +8,13 @@ requests
 pyarrow
 openai
 google-generativeai
-
+dotenv
+base64
+tempfile
+json
+typing
+os
+aiofiles
+re
+subprocess
+io
