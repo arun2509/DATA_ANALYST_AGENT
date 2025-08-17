@@ -34,10 +34,15 @@ pip install -r requirements.txt
 
 # Start FastAPI server
 uvicorn app:app --host 0.0.0.0 --port 8000
-'''
----
+```
 
-## requirements
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+
+## Requirements
+
 fastapi
 uvicorn
 pandas
