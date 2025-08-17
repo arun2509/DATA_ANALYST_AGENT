@@ -9,7 +9,6 @@ pyarrow
 openai
 google-generativeai
 dotenv
-tempfile
 json
 typing
 os
