@@ -1,10 +1,10 @@
 description: "Sample evaluation – network dataset"
 providers:
-  - 'exec: uv run run.py "{{ env.PROVIDER_URL }}"'
+  - 'exec: uv run run.py {{"http://127.0.0.1:8000"}}'
 defaultTest:
   options:
     provider:
-      id: openai:gpt-4.1-nano
+      id: openai:gpt-4o-mini
     transform: JSON.parse(output)
 tests:
   - vars:

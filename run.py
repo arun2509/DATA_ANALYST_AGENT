@@ -1,35 +1,24 @@
-#!/usr/bin/env python3
-import sys
-import json
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "requests",
+# ]
+# ///
+
 import subprocess
+import sys
 
-def main():
-    try:
+url = sys.argv[1]
 
-        # Call your FastAPI app with curl
-        cmd = [
-            "curl", "-s", "-X", "POST", "http://127.0.0.1:8000/",
-            "-F", f"questions=@questions.txt",
-            "-F", "files=@sample-sales.csv"
-        ]
+curl_command = [
+    "curl",
+    url,
+    "-F", "questions=@questions.txt",
+    "-F", "files=@edges.csv",
+]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            print(json.dumps({"error": f"curl failed: {result.stderr}"}))
-            return
-
-        # Ensure response is always JSON
-        try:
-            output_json = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            # Wrap non-JSON responses safely
-            output_json = {"output": result.stdout.strip()}
-
-        print(json.dumps(output_json))
-
-    except Exception as e:
-        print(json.dumps({"error": str(e)}))
-
-if __name__ == "__main__":
-    main()
+try:
+    result = subprocess.run(curl_command, capture_output=True, text=True, check=True)
+    print(result.stdout)
+except subprocess.CalledProcessError as e:
+    print(f"Error: {e.stderr}")
