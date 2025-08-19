@@ -12,4 +12,3 @@ dotenv
 aiofiles
 python-multipart
 seaborn
-shutil
