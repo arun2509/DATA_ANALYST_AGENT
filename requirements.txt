@@ -12,5 +12,5 @@ dotenv
 aiofiles
 python-multipart
 seaborn
-networkx==3.1
+networkx==2.5
 shutil
