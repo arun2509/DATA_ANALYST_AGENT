@@ -1,14 +1,11 @@
-import os
+# tools/scrape_website.py
 import requests
-from bs4 import BeautifulSoup
-from typing import Dict, Any
 
-
-def scrape_website(url: str, output_file: str) -> Dict[str, Any]:
-    """Fetch a URL and save HTML to output_file."""
-    resp = requests.get(url, timeout=30)
+def scrape_website(url: str, out_file: str):
+    """
+    Download the HTML from a website and save to a file.
+    """
+    resp = requests.get(url, timeout=15)
     resp.raise_for_status()
-    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
-    with open(output_file, "w", encoding="utf-8") as f:
+    with open(out_file, "w", encoding="utf-8") as f:
         f.write(resp.text)
-    return {"ok": True, "file": output_file, "size": len(resp.text)}

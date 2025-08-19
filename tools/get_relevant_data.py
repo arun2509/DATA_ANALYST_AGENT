@@ -1,38 +1,16 @@
-import os
-import requests
+# tools/get_relevant_data.py
 from bs4 import BeautifulSoup
-from typing import Dict, Any
 import pandas as pd
 
-def get_relevant_data(file_name: str, js_selector: str | None = None) -> Dict[str, Any]:
-    """Extract text/tables from a local HTML file.
-    If a CSS selector is provided, return matching nodes' text.
-    Else, try pandas.read_html to extract tables as CSV, else raw tables, else text.
+def get_relevant_data(html_file: str):
     """
-    with open(file_name, encoding="utf-8") as f:
-        html = f.read()
-    soup = BeautifulSoup(html, "html.parser")
+    Parse HTML and return first table (if any) or fallback text snippet.
+    """
+    with open(html_file, "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "html.parser")
 
-    if js_selector:
-        els = soup.select(js_selector)
-        if els:
-            return {"data": [el.get_text(strip=True) for el in els]}
-
-    # Try parsing HTML tables into CSV strings
     try:
-        dfs = pd.read_html(html)
-        if dfs:
-            return {"data": [df.to_csv(index=False) for df in dfs]}
+        tables = pd.read_html(str(soup))
+        return {"data": tables[0] if tables else str(soup.get_text()[:2000])}
     except Exception:
-        pass
-
-    # Fallback: BeautifulSoup table parsing
-    tables = soup.find_all("table")
-    if tables:
-        out = []
-        for i, table in enumerate(tables, 1):
-            out.append(f"Table {i}: " + table.get_text(separator=" ", strip=True))
-        return {"data": out}
-
-    # Final fallback: all visible text
-    return {"data": soup.get_text(separator=" ", strip=True)}
+        return {"data": str(soup.get_text()[:2000])}

@@ -1,65 +1,87 @@
-description: "TDS Data Analyst Agent – generic eval (20-point rubric)"
-
+description: "Sample evaluation – network dataset"
 providers:
-  - id: https
-    config:
-      url: https://data-analyst-agent-m7q3.onrender.com # Replace this with your API endpoint
-      method: POST
-      body: file://question.txt
-      transformResponse: json
-
+  - 'exec: uv run run.py "{{ env.PROVIDER_URL }}"'
+defaultTest:
+  options:
+    provider:
+      id: openai:gpt-4.1-nano
+    transform: JSON.parse(output)
 tests:
-  - description: "Data analysis"
+  - vars:
+      question: file://questions.txt
     assert:
-      # Structural gate – no score, hard-fail if not a 4-element array
-      - type: is-json
-        value: {type: array, minItems: 4, maxItems: 4}
-        weight: 0
-
-      # 1️⃣ first answer must equal 1
-      - type: python
-        weight: 4
-        value: |
-          import json, sys
-          print(json.loads(output)[0] == 1)
-
-      # 2️⃣ second answer must contain “Titanic” (case-insensitive)
-      - type: python
-        weight: 4
-        value: |
-          import json, re, sys
-          print(bool(re.search(r'titanic', json.loads(output)[1], re.I)))
-
-      # 3️⃣ third answer within ±0.001 of 0.485782
-      - type: python
-        weight: 4
-        value: |
-          import json, sys, math
-          print(abs(float(json.loads(output)[2]) - 0.485782) <= 0.001)
-
-      # 4️⃣ vision check ― send plot to GPT-4o-mini and grade multiple criteria
-      - type: llm-rubric
-        provider: openai:gpt-4.1-nano
-        weight: 8
-        # extract base-64 PNG from the 4th array element and inject into the prompt
-        preprocess: |
-          import json, re
-          data = json.loads(output)
-          context['plot'] = data[3
-        rubricPrompt: |
+    - type: is-json
+      value:
+        type: object
+        required:
           [
-            {
-              "role": "system",
-              "content": "Grade the scatterplot. Award *score 1* only iff ALL are true: (a) it's a scatterplot of Rank (x-axis) vs Peak (y-axis); (b) a dotted **red** regression line is present; (c) axes are visible & labelled; (d) file size < 100 kB. Otherwise score 0. Respond as JSON: {scatterplot:bool, regression:bool, axes:bool, size:bool, score:number}"
-            },
-            {
-              "role": "user",
-              "content": [
-                { "type": "image_url", "image_url": { "url": "{{plot}}" } },
-                { "type": "text", "text": "Here is the original task:\n\n{{vars.question}}\n\nReview the image and JSON above." }
-              ]
-            }
+            edge_count,
+            highest_degree_node,
+            average_degree,
+            density,
+            shortest_path_alice_eve,
+            network_graph,
+            degree_histogram,
           ]
-
-        threshold: 0.99  # require full pass
-
+        properties:
+          edge_count: { type: number }
+          highest_degree_node: { type: string }
+          average_degree: { type: number }
+          density: { type: number }
+          shortest_path_alice_eve: { type: number }
+          network_graph: { type: string }
+          degree_histogram: { type: string }
+    - type: python
+      weight: 3
+      value: |
+        if output["edge_count"] == 7 :
+          return True
+        return False
+    - type: python 
+      weight: 3
+      value: |
+        if output["highest_degree_node"].lower() == "bob" :
+          return True
+        return False
+    - type: python
+      weight: 3
+      value: |
+        val = float(output["average_degree"])
+        if abs(val - 2.8) <= 0.001:
+          return True
+        return False
+    - type: python
+      weight: 3
+      value: |
+        val = float(output["density"])
+        if abs(val - 0.7) <= 0.001:
+          return True
+        return False
+    - type: python
+      weight: 3
+      value: |
+        if output["shortest_path_alice_eve"] == 2:
+          return True
+        return False
+    - type: llm-rubric
+      weight: 8
+      rubricPrompt: |
+        [
+          {"role":"system","content":"Grade the network graph. Score 1 only if (a) nodes Alice, Bob, Carol, David, Eve are labelled; (b) edges match edges.csv; (c) layout is clear; (d) file size < 100 kB. Respond JSON {nodes:bool,edges:bool,layout:bool,size:bool,score:number}"},
+          {"role":"user","content":[
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,{{output["network_graph"]}}"}},
+            {"type":"text","text":"{{vars.question}}"}
+          ]}
+        ]
+      threshold: 0.99
+    - type: llm-rubric
+      weight: 8
+      rubricPrompt: |
+        [
+          {"role":"system","content":"Grade the degree histogram. Score 1 only if (a) bar chart of node degree counts; (b) bars are green; (c) axes visible and labelled; (d) file size < 100 kB. Respond JSON {bars:bool,color:bool,axes:bool,size:bool,score:number}"},
+          {"role":"user","content":[
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,{{output["degree_histogram"]}}"}},
+            {"type":"text","text":"{{vars.question}}"}
+          ]}
+        ]
+      threshold: 0.99

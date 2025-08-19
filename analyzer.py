@@ -1,195 +1,153 @@
+# analyzer.py
 import os
-import re
 import json
-import base64
-import traceback
-import subprocess
-from io import BytesIO
-from typing import Dict, Any
-
-import matplotlib.pyplot as plt
+import tempfile
 import pandas as pd
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+from typing import List, Dict, Any, Tuple, Union
+import io
+from io import BytesIO
+import base64
+import subprocess
+import sys
 
-from gemini_llm import query_gemini
-from tools import scrape_website, get_relevant_data
-from google.generativeai.types.generation_types import StopCandidateException
-
-TOOLS = [
-    {
-        "function_declarations": [
-            {
-                "name": "scrape_website",
-                "description": "Scrapes a website and saves the content to a file",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "URL to scrape"},
-                        "output_file": {"type": "string", "description": "Output HTML file"},
-                    },
-                    "required": ["url", "output_file"],
-                },
-            },
-            {
-                "name": "get_relevant_data",
-                "description": "Extract data from a local HTML file using a CSS selector",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_name": {"type": "string", "description": "Path to HTML file"},
-                        "js_selector": {"type": "string", "description": "CSS selector"},
-                    },
-                    "required": ["file_name"],
-                },
-            },
-        ]
-    }
-]
-
-# Map occasional wrong param keys coming back from LLM
-_FIX_KEYS = {
-    "scrape_website": {"file": "output_file"},
-    "get_relevant_data": {"file": "file_name"},
-}
+from tools.scrape_website import scrape_website
+from tools.get_relevant_data import get_relevant_data
+from openai_llm import query_openai
 
 
-def _sanitize_params(tool: str, params: dict) -> dict:
-    if tool in _FIX_KEYS:
-        for wrong, right in _FIX_KEYS[tool].items():
-            if wrong in params and right not in params:
-                params[right] = params.pop(wrong)
-    return params
+# ---------------- Helpers ----------------
+def _json_default(obj):
+    import numpy as np
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.ndarray,)):
+        return obj.tolist()
+    return str(obj)
 
+def df_to_base64(fig) -> str:
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode("utf-8")
+    plt.close(fig)
+    return b64
 
-def _rename_film_column(df: pd.DataFrame) -> None:
+def safe_preview(value):
     try:
-        cols_lower = {c.lower(): c for c in df.columns}
-        if "film" in cols_lower and cols_lower["film"] != "Film":
-            df.rename(columns={cols_lower["film"]: "Film"}, inplace=True)
-        elif "title" in cols_lower and cols_lower["title"] != "Film":
-            df.rename(columns={cols_lower["title"]: "Film"}, inplace=True)
-    except Exception:
-        pass
+        if isinstance(value, pd.DataFrame):
+            return value.head(5).to_dict()
+        return str(value)[:1000]
+    except Exception as e:
+        return f"[Preview error: {e}]"
 
 
-def _save_current_plot_as_base64() -> str | None:
-    try:
-        buf = BytesIO()
-        plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-        buf.seek(0)
-        data = base64.b64encode(buf.read()).decode("utf-8")
-        buf.close()
-        return data
-    except Exception:
-        return None
-
-
-def _run_generated_code(code: str) -> tuple[bool, str]:
-    """Run LLM-generated Python and return (ok, text_output).
-    The generated code must **print a JSON string** (array or object) to stdout.
-    We also try to capture a figure if created, but the evaluator only reads stdout.
+# ---------------- Universal Analyzer ----------------
+def analyze(
+    files: List[str],
+    questions: str,
+    return_code: bool = False
+) -> Union[Dict[str, Any], Tuple[Dict[str, Any], str]]:
     """
-    temp_path = "temp_code.py"
-    # Ensure the script runs in a clean namespace with pandas/matplotlib available
-    with open(temp_path, "w", encoding="utf-8") as f:
+    Universal analyzer:
+    - Handles CSV, Excel, JSON, HTML tables, or URLs (Wikipedia/others).
+    - Passes preview of data + questions to OpenAI.
+    - Executes generated Python code that sets `results`.
+    - Always returns a clean JSON object.
+    """
+    extracted_data: Dict[str, Dict[str, Any]] = {}
+
+    # Load files or scrape websites
+    for f in files:
+        key = os.path.basename(f)
+        try:
+            if f.startswith("http://") or f.startswith("https://"):
+                html_file = tempfile.mktemp(suffix=".html")
+                scrape_website(f, html_file)
+                extracted_data[key] = get_relevant_data(html_file)
+            elif f.endswith(".csv"):
+                df = pd.read_csv(f)
+                extracted_data[key] = {"data": df}
+            elif f.endswith((".xlsx", ".xls")):
+                df = pd.read_excel(f)
+                extracted_data[key] = {"data": df}
+            elif f.endswith(".json"):
+                df = pd.read_json(f)
+                extracted_data[key] = {"data": df}
+            elif f.endswith(".html"):
+                extracted_data[key] = get_relevant_data(f)
+            else:
+                with open(f, "r", encoding="utf-8") as fh:
+                    extracted_data[key] = {"data": fh.read()}
+        except Exception as e:
+            extracted_data[key] = {"data": None, "error": str(e)}
+
+    # Prepare LLM input
+    preview_data = {k: safe_preview(v.get("data")) for k, v in extracted_data.items()}
+
+    llm_input = f"""
+You are a Python data analysis assistant.
+Data (preview): {json.dumps(preview_data, indent=2)}
+Question: {questions}
+
+Generate Python code that produces a variable `results` (a JSON-serializable dict).
+Rules:
+- **Don't generate markdown code blocks.**
+- Don't import any undefined packages.
+- if the package not defined then install it using `pip install` and then regenerate the code.
+- if you need to import libraries, do so at the top of the code.
+- if you need to define functions, do so at the top of the code.
+- Use `pd.read_csv`, `pd.read_excel`, `pd.read_json` for data loading.
+- Use `plt` for plotting, and convert figures to base64 with `df_to_base64`.
+- Use pandas/numpy/matplotlib as needed.
+- Prefer the first table if multiple are present.
+- Handle missing columns or empty data gracefully.
+- If creating charts, convert matplotlib figures with df_to_base64(fig).
+- `results` must always be JSON serializable (convert numpy types).
+- after generating the full code, try to fix all errors and ensure it runs without issues.
+- If you need to import libraries, do so at the top of the code.
+- If you need to define functions, do so at the top of the code.
+- If you need to use any external libraries, ensure they are imported at the top of the code.
+"""
+
+    # Query OpenAI
+    code = query_openai(llm_input, model="gpt-4.1")
+
+    # Save for debugging
+    temp_code_path = os.path.join(tempfile.gettempdir(), "temp_code.py")
+    with open(temp_code_path, "w", encoding="utf-8") as f:
         f.write(code)
 
+    # Execution environment
+    sandbox = {
+        # core analysis libraries
+        "pd": pd,
+        "np": np,
+        "plt": plt,
+        # utilities
+        "df_to_base64": df_to_base64,
+        "extracted_data": extracted_data,
+        "results": {},
+        # common builtins / modules
+        "io": io,
+        "BytesIO": io.BytesIO,
+        "base64": base64,
+        "subprocess": subprocess,
+        "os": os,
+        "sys": sys,
+        "json": json,
+        "networkx": nx
+    }
     try:
-        proc = subprocess.run(["python", temp_path], capture_output=True, text=True, timeout=120)
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
-
-        # Best-effort fix on DataFrames post-run (if the user kept them in globals)
-        try:
-            local_vars: Dict[str, Any] = {}
-            exec(code, {"pd": pd, "plt": plt}, local_vars)
-            for v in list(local_vars.values()):
-                if isinstance(v, pd.DataFrame):
-                    _rename_film_column(v)
-        except Exception:
-            pass
-
-        # If figure exists but not saved, expose via hidden image (not used by evaluator)
-        if os.path.exists("scatterplot.png"):
-            try:
-                with open("scatterplot.png", "rb") as f:
-                    _ = base64.b64encode(f.read()).decode("utf-8")
-            except Exception:
-                pass
-        else:
-            _ = _save_current_plot_as_base64()
-
-        # Prefer stdout; if empty, surface stderr to help debugging
-        body = stdout if stdout else (stderr or "")
-        return True, body
-
-    except subprocess.TimeoutExpired:
-        return False, json.dumps({"error": "Code execution timed out"})
+        exec(code, sandbox)   # use sandbox for globals
+        results = sandbox.get("results", {})
     except Exception as e:
-        return False, json.dumps({"error": f"Code execution failed: {e}"})
+        results = {"error": f"Execution error: {e}"}
 
-
-def analyze(questions_file: str, all_files: Dict[str, str]) -> Dict[str, Any]:
-    # 1) read prompt
-    try:
-        with open(questions_file, encoding="utf-8") as f:
-            user_task = f.read()
-    except Exception as e:
-        return {"ok": False, "body": json.dumps({"error": f"Failed to read questions.txt: {e}"})}
-
-    # 2) call LLM with system prompt + tools
-    for attempt in range(2):
-        try:
-            response = query_gemini(user_task, tools=TOOLS)
-            break
-        except StopCandidateException:
-            if attempt == 0:
-                user_task += "\n\n(RETRY) Your previous tool call failed. Call tools again with correct parameters."
-                continue
-            return {"ok": False, "body": json.dumps({"error": "Malformed tool call twice"})}
-        except Exception as e:
-            return {"ok": False, "body": json.dumps({"error": f"Gemini error: {e}"})}
-
-    # 3) execute any tool calls (scrape, extract)
-    try:
-        calls = getattr(response, "function_calls", []) or []
-        for c in calls:
-            name = getattr(c, "name", "")
-            args = getattr(c, "args", "{}")
-            try:
-                params = json.loads(args) if isinstance(args, str) else dict(args)
-            except Exception:
-                params = {}
-            params = _sanitize_params(name, params)
-
-            if name == "scrape_website":
-                scrape_website(**params)
-            elif name == "get_relevant_data":
-                get_relevant_data(**params)
-            # ignore others silently
-    except Exception:
-        pass
-
-    # 4) find generated python in the LLM text and run it
-    text = getattr(response, "text", "") or ""
-    code = None
-
-    # prefer fenced ```python blocks
-    m = re.search(r"```python\n(.*?)```", text, flags=re.DOTALL)
-    if m:
-        code = m.group(1).strip()
-    elif "import" in text or "def " in text:
-        code = text.strip()
-
-    if not code:
-        # No code returned – create a friendly fallback answer that still returns JSON
-        fallback = json.dumps([
-            0,
-            "Not enough data to determine the earliest film over $1.5B",
-            0.0,
-            "data:image/png;base64,"
-        ])
-        return {"ok": True, "body": fallback}
-
-    ok, body = _run_generated_code(code)
-    # Ensure we return **only** the JSON structure the generated code printed
-    return {"ok": ok, "body": body}
+    if return_code:
+        return results, code
+    return results
