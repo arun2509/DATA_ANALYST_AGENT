@@ -12,3 +12,6 @@ dotenv
 aiofiles
 python-multipart
 seaborn
+networkx
+subprocess
+shutil
